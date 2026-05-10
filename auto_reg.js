@@ -136,10 +136,46 @@ function formatProfileData(tokens, priority = 1) {
 }
 
 // ==========================================
+// GLOBAL OAUTH SERVER (HỖ TRỢ ĐA LUỒNG)
+// ==========================================
+const pendingCallbacks = new Map();
+const oauthApp = express();
+let globalServerStarted = false;
+
+oauthApp.get('/auth/callback', (req, res) => {
+    const { code, state, error } = req.query;
+    if (pendingCallbacks.has(state)) {
+        const { resolve, reject } = pendingCallbacks.get(state);
+        pendingCallbacks.delete(state);
+        
+        if (error) {
+            res.send(`<h1>Lỗi đăng nhập!</h1><p>${error}</p>`);
+            return reject(new Error(error));
+        }
+        res.send(`<h1>Đăng nhập thành công!</h1><p>Vui lòng quay lại Terminal.</p><script>window.close();</script>`);
+        resolve(code);
+    } else {
+        res.send(`<h1>Lỗi</h1><p>Phiên OAuth không tồn tại hoặc đã hết hạn.</p>`);
+    }
+});
+
+async function startGlobalServer() {
+    if (globalServerStarted) return;
+    globalServerStarted = true;
+    return new Promise(resolve => {
+        const server = http.createServer(oauthApp);
+        server.listen(CONFIG.port, () => {
+            console.log(`[SYSTEM] Global OAuth Server đang chạy tại http://localhost:${CONFIG.port}`);
+            resolve();
+        });
+    });
+}
+
+// ==========================================
 // CHƯƠNG TRÌNH CHÍNH
 // ==========================================
-async function loginToOpenAI() {
-  console.log("[SYSTEM] Bắt đầu quá trình đăng nhập OpenAI...");
+async function loginToOpenAI(threadId = 1) {
+  console.log(`[SYSTEM] [Luồng ${threadId}] Bắt đầu quá trình đăng nhập OpenAI...`);
 
   // 1. Khởi tạo mã PKCE và State
   const pkce = generatePKCE();
@@ -160,40 +196,13 @@ async function loginToOpenAI() {
   
   const authUrl = `${CONFIG.authorizeUrl}?${authParams.toString()}`;
 
-  // 3. Khởi động Local Web Server để hứng callback
-  const app = express();
-  let server;
-
+  // 3. Đăng ký Callback
   const codePromise = new Promise((resolve, reject) => {
-    app.get('/auth/callback', (req, res) => {
-      const { code, state: returnedState, error } = req.query;
-
-      if (error) {
-        res.send(`<h1>Lỗi đăng nhập!</h1><p>${error}</p>`);
-        return reject(new Error(error));
-      }
-
-      if (state !== returnedState) {
-        res.send(`<h1>Lỗi bảo mật!</h1><p>State không khớp.</p>`);
-        return reject(new Error("State mismatch"));
-      }
-
-      // Thông báo thành công trên trình duyệt
-      res.send(`
-        <h1> Đăng nhập thành công!</h1>
-        <p>Vui lòng quay lại màn hình Terminal.</p>
-      `);
-      
-      resolve(code);
-    });
+      pendingCallbacks.set(state, { resolve, reject });
   });
 
-  server = http.createServer(app);
-  await new Promise(resolve => server.listen(CONFIG.port, resolve));
-  console.log(` Local Server đang chạy tại http://localhost:${CONFIG.port}`);
-
   // 4. Mở trình duyệt bằng Playwright
-  console.log("[ACTION] Đang mở trình duyệt ẨN DANH...");
+  console.log(`[ACTION] [Luồng ${threadId}] Đang mở trình duyệt ẨN DANH...`);
   // Đặt kích thước màn hình dọc (như mobile) để cửa sổ gọn gàng, không choán chỗ
   const browser = await chromium.launch({ 
       headless: false,
@@ -253,7 +262,7 @@ async function loginToOpenAI() {
       throw new Error("Không nhận được mã xác nhận sau 90 giây.");
     }
 
-    console.log("[ACTION] Đang bấm vào link đăng ký...");
+    console.log(`[ACTION] [Luồng ${threadId}] Đang bấm vào link đăng ký...`);
     const signUpSelector = '#_r_1_ > div._section_1wcdi_7._ctas_1wcdi_13 > span > a';
     await page.waitForSelector(signUpSelector, { timeout: 15000 });
     await page.click(signUpSelector);
@@ -447,40 +456,50 @@ async function loginToOpenAI() {
     // Nhấn Enter để gửi form
     await ageInput.press('Enter');
 
-    // 3. Click Xác nhận màn hình 1
-    console.log("[ACTION] Đang xác nhận màn hình onboarding 1...");
-    await page.waitForTimeout(2000);
-    // Sử dụng selector bắt class có chứa chữ _ctas_ (Call to Actions)
-    let confirmBtn = page.locator('div[class*="_ctas_"] button');
-    await confirmBtn.last().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-    if (await confirmBtn.last().isVisible()) {
-        await confirmBtn.last().click();
+    console.log(`[ACTION] [Luồng ${threadId}] Đang xử lý các màn hình Onboarding cuối cùng...`);
+    
+    // Vòng lặp xử lý Onboarding & Bẫy lỗi Duplicate Auth
+    async function handleOnboarding() {
+        for (let i = 0; i < 20; i++) { // Thử tối đa 20 vòng (khoảng 40 giây)
+            try {
+                // 1. Nếu có lỗi Duplicate Auth, ưu tiên bấm Try again trước
+                const tryAgainBtn = page.getByRole('button', { name: /try again/i });
+                if (await tryAgainBtn.isVisible()) {
+                    console.log(`[WARN] [Luồng ${threadId}] Gặp lỗi Duplicate Auth, đang bấm Try again...`);
+                    await tryAgainBtn.click();
+                    await page.waitForTimeout(3000);
+                    continue; 
+                }
+
+                // 2. Bấm nút Continue (Xác nhận) liên tục nếu nó xuất hiện
+                const confirmBtn = page.locator('div[class*="_ctas_"] button');
+                if (await confirmBtn.last().isVisible()) {
+                    console.log(`[ACTION] [Luồng ${threadId}] Đang bấm nút Xác nhận (Continue)...`);
+                    await confirmBtn.last().click();
+                    await page.waitForTimeout(2000);
+                    continue;
+                }
+            } catch (e) {}
+            
+            await page.waitForTimeout(1500);
+        }
+        throw new Error("Quá thời gian xử lý Onboarding (40s)");
     }
 
-    // 4. Chờ và click Xác nhận màn hình 2
-    console.log("[ACTION] Đang xác nhận màn hình onboarding 2...");
-    await page.waitForTimeout(2000);
-    confirmBtn = page.locator('div[class*="_ctas_"] button');
-    await confirmBtn.last().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-    if (await confirmBtn.last().isVisible()) {
-        await confirmBtn.last().click();
-    }
+    // Chạy song song: vừa rình bấm nút (Continue hoặc Try again), vừa chờ nhận Auth Code
+    const code = await Promise.race([
+        codePromise,
+        handleOnboarding()
+    ]);
 
-    console.log("[SUCCESS] HOÀN TẤT ĐĂNG KÝ PROFILE!");
+    console.log(`[SUCCESS] [Luồng ${threadId}] HOÀN TẤT ĐĂNG KÝ PROFILE! Đã nhận Authorization Code.`);
 
-  } catch (err) {
-    console.error("Lỗi Playwright ở bước đăng ký:", err.message);
-  }
+  // ------------------------------------
+  // ĐỔI TOKEN
   // ------------------------------------
 
-  try {
-    // 5. Chờ nhận được Authorization Code
-    const code = await codePromise;
-    console.log("[SUCCESS] Đã nhận được Authorization Code. Đang tiến hành đổi Token...");
-
-    // 6. Đóng trình duyệt và server
+    // 6. Đóng trình duyệt
     await browser.close();
-    server.close();
 
     // 7. Gọi API đổi Code lấy Token
     const tokenResponse = await fetch(CONFIG.tokenUrl, {
@@ -536,29 +555,56 @@ async function loginToOpenAI() {
 
   } catch (error) {
     console.error("[FATAL] Xảy ra lỗi:", error.message);
-    if (server) server.close();
     await browser.close();
+    throw error; // Ném lỗi ra ngoài để vòng lặp biết
   }
 }
 
-// Hàm chạy vòng lặp tạo nhiều tài khoản
+// Hàm chạy vòng lặp tạo nhiều tài khoản (Hỗ trợ Đa luồng)
 async function runAutomation() {
+    await startGlobalServer();
+    
     const total = UI_CONFIG.accountCount || 1;
-    for (let i = 1; i <= total; i++) {
-        console.log(`\n======================================================`);
-        console.log(`[SYSTEM] BẮT ĐẦU TẠO TÀI KHOẢN THỨ ${i} / ${total}`);
-        console.log(`======================================================\n`);
-        
-        try {
-            await loginToOpenAI();
-            console.log(`\n[SUCCESS] Thành công tài khoản thứ ${i}! Nghỉ 5 giây trước khi tiếp tục...`);
-            await new Promise(r => setTimeout(r, 5000));
-        } catch (e) {
-            console.error(`\n[ERROR] Lỗi nghiêm trọng ở tài khoản ${i}:`, e.message);
-            console.log(`[WARN] Bỏ qua và chạy tiếp tài khoản sau...`);
+    const MAX_CONCURRENT = 3; // Mở tối đa 3 trình duyệt cùng lúc
+    const concurrentCount = Math.min(MAX_CONCURRENT, total);
+    
+    console.log(`\n======================================================`);
+    console.log(`[SYSTEM] BẮT ĐẦU CHẠY ĐA LUỒNG (${concurrentCount} luồng) - TỔNG: ${total} TÀI KHOẢN`);
+    console.log(`======================================================\n`);
+    
+    let currentIndex = 0;
+    
+    // Hàm Worker thực thi tác vụ
+    async function worker(threadId) {
+        while (currentIndex < total) {
+            const taskIndex = ++currentIndex;
+            if (taskIndex > total) break;
+            
+            console.log(`\n[SYSTEM] [Luồng ${threadId}] BẮT ĐẦU TẠO TÀI KHOẢN THỨ ${taskIndex} / ${total}`);
+            
+            try {
+                await loginToOpenAI(threadId);
+                console.log(`\n[SUCCESS] [Luồng ${threadId}] Thành công tài khoản thứ ${taskIndex}! Nghỉ 5 giây...`);
+                await new Promise(r => setTimeout(r, 5000));
+            } catch (e) {
+                console.error(`\n[ERROR] [Luồng ${threadId}] Lỗi tài khoản ${taskIndex}:`, e.message);
+                console.log(`[WARN] [Luồng ${threadId}] Bỏ qua và chạy tiếp tài khoản sau...`);
+            }
         }
     }
-    console.log(`\n[SYSTEM] ĐÃ HOÀN TẤT CHẠY ${total} TÀI KHOẢN!`);
+    
+    // Khởi tạo các luồng
+    const workers = [];
+    for (let i = 1; i <= concurrentCount; i++) {
+        workers.push(worker(i));
+        // Tránh mở trình duyệt cùng một miligiây gây crash
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    
+    // Đợi tất cả các luồng hoàn thành
+    await Promise.all(workers);
+    
+    console.log(`\n[SYSTEM] ĐÃ HOÀN TẤT CHẠY ĐA LUỒNG ${total} TÀI KHOẢN!`);
     process.exit(0);
 }
 
