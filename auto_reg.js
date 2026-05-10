@@ -8,10 +8,21 @@ const fs = require('fs');
 chromium.use(stealth);
 
 // ==========================================
-// CẤU HÌNH VIOTP
+// ĐỌC CẤU HÌNH TỪ WEB UI
 // ==========================================
-const VIOTP_API_TOKEN = "6b43c754ddb346e7a4d564320de6fe7e";
-const VIOTP_SERVICE_ID = 1234; // ĐIỀN ID DỊCH VỤ CỦA OPENAI VÀO ĐÂY
+let UI_CONFIG = { viotpToken: "", accountCount: 1 };
+if (fs.existsSync('ui_config.json')) {
+    try {
+        UI_CONFIG = JSON.parse(fs.readFileSync('ui_config.json', 'utf8'));
+    } catch (e) {}
+}
+
+const VIOTP_API_TOKEN = UI_CONFIG.viotpToken;
+if (!VIOTP_API_TOKEN) {
+    console.error("[Lỗi] Chưa cấu hình API Token ViOTP. Vui lòng thiết lập trên giao diện!");
+    process.exit(1);
+}
+const VIOTP_SERVICE_ID = 7; // Thường OpenAI là số 7 trên ViOTP. Nếu sai bạn sửa ở đây.
 
 async function rentPhoneNumber() {
     const url = `https://api.viotp.com/request/getv2?token=${VIOTP_API_TOKEN}&serviceId=${VIOTP_SERVICE_ID}`;
@@ -313,45 +324,39 @@ async function loginToOpenAI() {
     // ==========================================
     // BƯỚC XÁC MINH SỐ ĐIỆN THOẠI (ViOTP)
     // ==========================================
-    // 1. Chờ form sđt load xong và click vào ô chọn quốc gia
-    const countryDropdownButton = 'button[aria-haspopup="listbox"]';
-    console.log("🌍 Đang chờ trang nhập số điện thoại và chọn quốc gia Việt Nam...");
-    await page.waitForSelector(countryDropdownButton, { timeout: 20000 });
-    await page.click(countryDropdownButton);
     
-    // 2. Chờ nửa giây để hiệu ứng cái menu xổ xuống hoàn tất
-    await page.waitForTimeout(500);
-    
-    // 3. Chọn "Vietnam" (Xử lý cho danh sách dài)
-    // - Bấm chữ 'v' để nhảy nhanh xuống khu vực vần V
-    await page.keyboard.press('v');
-    await page.waitForTimeout(500);
-
-    // - Bấm mũi tên xuống liên tục cho tới khi thấy chữ Vietnam xuất hiện
-    for (let i = 0; i < 20; i++) {
-        const vietnamOption = page.getByRole('option', { name: /Vietnam/i });
-        if (await vietnamOption.isVisible()) {
-            await vietnamOption.click();
-            break;
-        }
-        await page.keyboard.press('ArrowDown');
-        await page.waitForTimeout(100);
-    }
-    
-    // 4. Đợi một chút để nó chọn xong
-    await page.waitForTimeout(500);
-    console.log("✅ Đã chọn xong Việt Nam!");
-
     // --- VÒNG LẶP LẤY SỐ & CHỜ SMS ---
     let smsCode = null;
     let maxRetries = 5; // Thử tối đa 5 số
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        console.log(`\n📞 [Lần ${attempt}] Đang lấy số điện thoại từ ViOTP...`);
+        console.log(`\n📞 [Lần ${attempt}] Đang xử lý màn hình nhập số điện thoại...`);
+        
+        // 1. Luôn luôn chọn lại quốc gia Việt Nam (phòng trường hợp form bị reset khi quay lại)
+        const countryDropdownButton = 'button[aria-haspopup="listbox"]';
+        console.log("🌍 Đang chọn quốc gia Việt Nam...");
+        await page.waitForSelector(countryDropdownButton, { timeout: 20000 });
+        await page.click(countryDropdownButton);
+        await page.waitForTimeout(500);
+        
+        await page.keyboard.press('v');
+        await page.waitForTimeout(500);
+        for (let i = 0; i < 20; i++) {
+            const vietnamOption = page.getByRole('option', { name: /Vietnam/i });
+            if (await vietnamOption.isVisible()) {
+                await vietnamOption.click();
+                break;
+            }
+            await page.keyboard.press('ArrowDown');
+            await page.waitForTimeout(100);
+        }
+        await page.waitForTimeout(500);
+        
+        // 2. Lấy số điện thoại từ ViOTP
         const phoneData = await rentPhoneNumber();
         console.log(`=> Đã thuê được số: ${phoneData.phoneNumber}`);
 
-        // Điền số điện thoại
+        // 3. Điền số điện thoại
         const phoneInputSelector = '.PhoneInputInput input, input[type="tel"]';
         await page.waitForSelector(phoneInputSelector, { timeout: 10000 });
         
@@ -383,9 +388,9 @@ async function loginToOpenAI() {
             console.log(`📩 Đã lấy được mã SMS: ${smsCode}`);
             break; // Lấy thành công thì thoát vòng lặp
         } catch (e) {
-            console.log(`❌ Lỗi chờ OTP: ${e.message}. Đang load lại trang để thử số khác...`);
-            // Nếu chờ OTP fail, ta load lại trang để OpenAI đẩy về bước nhập SĐT
-            await page.reload();
+            console.log(`❌ Lỗi chờ OTP: ${e.message}. Đang ấn nút Quay lại (Back) để thử số khác...`);
+            // Sử dụng tính năng "Go Back" của trình duyệt để quay ngược lại trang điền số điện thoại
+            await page.goBack();
             await page.waitForTimeout(3000);
         }
     }
@@ -528,6 +533,26 @@ async function loginToOpenAI() {
   }
 }
 
-// Chạy chương trình
-loginToOpenAI();
+// Hàm chạy vòng lặp tạo nhiều tài khoản
+async function runAutomation() {
+    const total = UI_CONFIG.accountCount || 1;
+    for (let i = 1; i <= total; i++) {
+        console.log(`\n======================================================`);
+        console.log(`🚀 BẮT ĐẦU TẠO TÀI KHOẢN THỨ ${i} / ${total}`);
+        console.log(`======================================================\n`);
+        
+        try {
+            await loginToOpenAI();
+            console.log(`\n✅ Thành công tài khoản thứ ${i}! Nghỉ 5 giây trước khi tiếp tục...`);
+            await new Promise(r => setTimeout(r, 5000));
+        } catch (e) {
+            console.error(`\n❌ Lỗi nghiêm trọng ở tài khoản ${i}:`, e.message);
+            console.log(`Bỏ qua và chạy tiếp tài khoản sau...`);
+        }
+    }
+    console.log(`\n🎉 ĐÃ HOÀN TẤT CHẠY ${total} TÀI KHOẢN!`);
+    process.exit(0);
+}
+
+runAutomation();
 

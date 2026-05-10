@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAI Auto Tool</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --glass-bg: rgba(30, 41, 59, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+        body {
+            background: radial-gradient(circle at top right, #1e1b4b, var(--bg));
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            width: 1000px;
+            max-width: 95%;
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 24px;
+            background: var(--glass-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--glass-border);
+            border-radius: 24px;
+            padding: 32px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+        .panel { display: flex; flex-direction: column; gap: 20px; }
+        h1 { font-size: 26px; font-weight: 600; background: linear-gradient(to right, #60a5fa, #a78bfa); -webkit-background-clip: text; color: transparent; margin-bottom: 4px;}
+        .form-group { display: flex; flex-direction: column; gap: 8px; }
+        label { font-size: 14px; font-weight: 500; color: var(--text-muted); }
+        input, select {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--glass-border);
+            color: white;
+            padding: 14px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s;
+        }
+        input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+        button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 16px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 10px;
+        }
+        button:hover { background: var(--primary-hover); transform: translateY(-1px); }
+        
+        .terminal-container {
+            background: #000;
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            height: 500px;
+        }
+        .terminal-header {
+            background: #1e293b;
+            padding: 12px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #cbd5e1;
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .dot { width: 10px; height: 10px; border-radius: 50%; }
+        .terminal {
+            padding: 20px;
+            font-family: 'Consolas', monospace;
+            font-size: 13px;
+            color: #10b981;
+            overflow-y: auto;
+            flex-grow: 1;
+            line-height: 1.6;
+        }
+        .terminal span.system { color: #8b5cf6; }
+        .terminal span.error { color: #ef4444; }
+        .terminal span.warn { color: #f59e0b; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="panel">
+            <div>
+                <h1>OpenAI Auto Tool</h1>
+                <p style="color: var(--text-muted); font-size: 14px;">Bảng điều khiển tự động hóa</p>
+            </div>
+            
+            <div class="form-group">
+                <label>ViOTP API Token</label>
+                <input type="text" id="viotpToken" placeholder="Nhập token ViOTP của bạn..." value="">
+            </div>
+            
+            <div class="form-group">
+                <label>Chế độ chạy</label>
+                <select id="mode">
+                    <option value="register">Đăng ký tài khoản mới (Auto Reg)</option>
+                    <option value="login" disabled>Đăng nhập (Sắp ra mắt)</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label>Số lượng tài khoản cần tạo</label>
+                <input type="number" id="accountCount" value="1" min="1" max="100">
+            </div>
+            
+            <button id="startBtn" onclick="startBot()">Chạy Automation</button>
+            <button id="stopBtn" onclick="stopBot()" style="background: #ef4444; display: none;">Dừng lại ngay</button>
+        </div>
+        
+        <div class="terminal-container">
+            <div class="terminal-header">
+                <div class="dot" style="background: #ef4444;"></div>
+                <div class="dot" style="background: #eab308;"></div>
+                <div class="dot" style="background: #22c55e;"></div>
+                <span style="margin-left: 8px;">Log Tiến Trình (Trực tiếp)</span>
+            </div>
+            <div class="terminal" id="terminal">
+                <span class="system">Giao diện đã sẵn sàng. Hãy nhập thông tin bên trái và bấm Chạy!</span><br>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const terminal = document.getElementById('terminal');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        let evtSource = null;
+
+        function appendLog(text) {
+            const span = document.createElement('span');
+            // Đổi màu log dựa trên từ khóa
+            if (text.includes('Lỗi') || text.includes('Từ chối') || text.includes('Thất bại')) span.className = 'error';
+            else if (text.includes('Đang chờ')) span.className = 'warn';
+            else if (text.includes('HOÀN TẤT') || text.includes('BẮT ĐẦU')) span.className = 'system';
+            
+            span.innerText = text;
+            terminal.appendChild(span);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        async function startBot() {
+            const token = document.getElementById('viotpToken').value;
+            const count = document.getElementById('accountCount').value;
+            const mode = document.getElementById('mode').value;
+
+            if(!token) return alert('Vui lòng nhập ViOTP Token!');
+
+            startBtn.style.display = 'none';
+            stopBtn.style.display = 'block';
+            terminal.innerHTML = '';
+            appendLog('[HỆ THỐNG] Đang khởi động Playwright...\n');
+
+            await fetch('/api/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ viotpToken: token, accountCount: parseInt(count), mode })
+            });
+
+            if (evtSource) evtSource.close();
+            evtSource = new EventSource('/api/logs');
+            evtSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.closed) {
+                    stopBotUI();
+                }
+                appendLog(data.text);
+            };
+        }
+
+        async function stopBot() {
+            await fetch('/api/stop', { method: 'POST' });
+            stopBotUI();
+        }
+
+        function stopBotUI() {
+            startBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            if (evtSource) {
+                evtSource.close();
+                evtSource = null;
+            }
+            appendLog('\n[HỆ THỐNG ĐÃ DỪNG]\n');
+        }
+    </script>
+</body>
+</html>
