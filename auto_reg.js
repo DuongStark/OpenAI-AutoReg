@@ -332,6 +332,14 @@ async function loginToOpenAI() {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         console.log(`\n📞 [Lần ${attempt}] Đang xử lý màn hình nhập số điện thoại...`);
         
+        const phoneInputSelector = '.PhoneInputInput input, input[type="tel"]';
+        await page.waitForSelector(phoneInputSelector, { timeout: 10000 });
+        
+        // 0. Xóa số cũ (nếu có) TRƯỚC KHI chọn quốc gia
+        // Nếu không xóa, lúc chọn VN xong nó sẽ tự nhảy lại +1 (do nhận diện số Mỹ cũ)
+        await page.fill(phoneInputSelector, '');
+        await page.waitForTimeout(200);
+
         // 1. Luôn luôn chọn lại quốc gia Việt Nam (phòng trường hợp form bị reset khi quay lại)
         const countryDropdownButton = 'button[aria-haspopup="listbox"]';
         console.log("🌍 Đang chọn quốc gia Việt Nam...");
@@ -357,12 +365,6 @@ async function loginToOpenAI() {
         console.log(`=> Đã thuê được số: ${phoneData.phoneNumber}`);
 
         // 3. Điền số điện thoại
-        const phoneInputSelector = '.PhoneInputInput input, input[type="tel"]';
-        await page.waitForSelector(phoneInputSelector, { timeout: 10000 });
-        
-        // Xóa trắng ô input trước (nếu vòng trước gõ rồi)
-        await page.fill(phoneInputSelector, '');
-        await page.waitForTimeout(200);
         await page.fill(phoneInputSelector, phoneData.phoneNumber);
         
         // Tạo "bẫy" để bắt luồng API xem OpenAI có chê số này không
