@@ -152,12 +152,27 @@
 
         function appendLog(text) {
             const span = document.createElement('span');
-            // Đổi màu log dựa trên từ khóa
-            if (text.includes('Lỗi') || text.includes('Từ chối') || text.includes('Thất bại')) span.className = 'error';
-            else if (text.includes('Đang chờ')) span.className = 'warn';
-            else if (text.includes('HOÀN TẤT') || text.includes('BẮT ĐẦU')) span.className = 'system';
             
-            span.innerText = text;
+            // Xử lý Highlight các Tag [INFO], [ERROR], v.v... để nhìn ngầu như Terminal xịn
+            let htmlText = text
+                .replace(/\[SYSTEM\]/g, '<span style="color: #a855f7; font-weight: bold;">[SYSTEM]</span>')
+                .replace(/\[SUCCESS\]/g, '<span style="color: #22c55e; font-weight: bold;">[SUCCESS]</span>')
+                .replace(/\[ERROR\]/g, '<span style="color: #ef4444; font-weight: bold;">[ERROR]</span>')
+                .replace(/\[FATAL\]/g, '<span style="color: #dc2626; font-weight: bold; background: #fee2e2;">[FATAL]</span>')
+                .replace(/\[WAIT\]/g, '<span style="color: #eab308; font-weight: bold;">[WAIT]</span>')
+                .replace(/\[ACTION\]/g, '<span style="color: #3b82f6; font-weight: bold;">[ACTION]</span>')
+                .replace(/\[PROCESS\]/g, '<span style="color: #0ea5e9; font-weight: bold;">[PROCESS]</span>')
+                .replace(/\[RETRY\]/g, '<span style="color: #f97316; font-weight: bold;">[RETRY]</span>')
+                .replace(/\[WARN\]/g, '<span style="color: #eab308; font-weight: bold;">[WARN]</span>')
+                .replace(/\[INFO\]/g, '<span style="color: #64748b; font-weight: bold;">[INFO]</span>');
+
+            span.innerHTML = htmlText;
+            
+            // Đổi màu text mờ đi một chút nếu là lỗi để phân biệt rõ
+            if (text.includes('[ERROR]') || text.includes('[FATAL]')) {
+                span.style.color = '#fca5a5';
+            }
+            
             terminal.appendChild(span);
             terminal.scrollTop = terminal.scrollHeight;
         }

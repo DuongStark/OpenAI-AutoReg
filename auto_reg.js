@@ -38,7 +38,7 @@ async function rentPhoneNumber() {
 }
 
 async function waitForSmsCode(requestId) {
-    console.log(`⏳ Đang chờ mã OTP SMS (Timeout: 2 phút)...`);
+    console.log(`[WAIT] Đang chờ mã OTP SMS (Timeout: 2 phút)...`);
     const url = `https://api.viotp.com/session/getv2?requestId=${requestId}&token=${VIOTP_API_TOKEN}`;
     for (let i = 0; i < 40; i++) {
         await new Promise(res => setTimeout(res, 3000));
@@ -139,7 +139,7 @@ function formatProfileData(tokens, priority = 1) {
 // CHƯƠNG TRÌNH CHÍNH
 // ==========================================
 async function loginToOpenAI() {
-  console.log("🚀 Bắt đầu quá trình đăng nhập OpenAI...");
+  console.log("[SYSTEM] Bắt đầu quá trình đăng nhập OpenAI...");
 
   // 1. Khởi tạo mã PKCE và State
   const pkce = generatePKCE();
@@ -180,7 +180,7 @@ async function loginToOpenAI() {
 
       // Thông báo thành công trên trình duyệt
       res.send(`
-        <h1>✅ Đăng nhập thành công!</h1>
+        <h1> Đăng nhập thành công!</h1>
         <p>Vui lòng quay lại màn hình Terminal.</p>
       `);
       
@@ -190,10 +190,10 @@ async function loginToOpenAI() {
 
   server = http.createServer(app);
   await new Promise(resolve => server.listen(CONFIG.port, resolve));
-  console.log(`🌍 Local Server đang chạy tại http://localhost:${CONFIG.port}`);
+  console.log(` Local Server đang chạy tại http://localhost:${CONFIG.port}`);
 
   // 4. Mở trình duyệt bằng Playwright
-  console.log("🌐 Đang mở trình duyệt ẨN DANH...");
+  console.log("[ACTION] Đang mở trình duyệt ẨN DANH...");
   // Đặt kích thước màn hình dọc (như mobile) để cửa sổ gọn gàng, không choán chỗ
   const browser = await chromium.launch({ 
       headless: false,
@@ -220,7 +220,7 @@ async function loginToOpenAI() {
 
     // Hàm gọi API lấy mã xác nhận
     async function waitForEmailCode(email) {
-      console.log(`⏳ Đang chờ email chứa mã xác nhận gửi tới ${email}...`);
+      console.log(`[WAIT] Đang chờ email chứa mã xác nhận gửi tới ${email}...`);
       const inboxUrl = `https://temp-mail.starkduong.workers.dev/inbox?email=${email}`;
       
       for (let i = 0; i < 30; i++) { // Thử tối đa 30 lần (90 giây)
@@ -241,7 +241,7 @@ async function loginToOpenAI() {
               // Dùng Regex tìm 6 chữ số liên tiếp
               const match = mailDetail.body.match(/\b(\d{6})\b/);
               if (match) {
-                console.log(`📩 Đã lấy được mã xác nhận: ${match[1]}`);
+                console.log(`[SUCCESS] Đã lấy được mã xác nhận: ${match[1]}`);
                 return match[1];
               }
             }
@@ -253,16 +253,16 @@ async function loginToOpenAI() {
       throw new Error("Không nhận được mã xác nhận sau 90 giây.");
     }
 
-    console.log("🖱️ Đang bấm vào link đăng ký...");
+    console.log("[ACTION] Đang bấm vào link đăng ký...");
     const signUpSelector = '#_r_1_ > div._section_1wcdi_7._ctas_1wcdi_13 > span > a';
     await page.waitForSelector(signUpSelector, { timeout: 15000 });
     await page.click(signUpSelector);
 
-    console.log("📧 Đang tạo email ngẫu nhiên...");
+    console.log("� Đang tạo email ngẫu nhiên...");
     const randomEmail = generateRandomEmail();
-    console.log(`=> Email mới: ${randomEmail}`);
+    console.log(`[INFO] => Email mới: ${randomEmail}`);
 
-    console.log("✍️ Đang điền Email và ấn Enter...");
+    console.log("[ACTION] Đang điền Email và ấn Enter...");
     const emailInputSelector = 'input[name="email"], input[type="email"]';
     await page.waitForSelector(emailInputSelector, { timeout: 15000 });
     // Chờ một chút để ô input sẵn sàng
@@ -280,11 +280,11 @@ async function loginToOpenAI() {
       return pass + 'A1!'; // Đảm bảo luôn có chữ hoa, số và ký tự đặc biệt
     }
 
-    console.log("🔑 Đang tạo mật khẩu ngẫu nhiên...");
+    console.log("[PROCESS] Đang tạo mật khẩu ngẫu nhiên...");
     const randomPassword = generateRandomPassword();
-    console.log(`=> Mật khẩu mới: ${randomPassword}`);
+    console.log(`[INFO] => Mật khẩu mới: ${randomPassword}`);
 
-    console.log("✍️ Đang chờ ô nhập Mật khẩu...");
+    console.log("[WAIT] Đang chờ ô nhập Mật khẩu...");
     // Selector của ô nhập mật khẩu. Dùng type="password" vì ID react-aria là ID tự động thay đổi
     const passwordSelector = 'input[type="password"], input[name="password"]';
     await page.waitForSelector(passwordSelector, { timeout: 15000 });
@@ -292,7 +292,7 @@ async function loginToOpenAI() {
     await page.fill(passwordSelector, randomPassword);
     await page.press(passwordSelector, 'Enter');
 
-    console.log("💾 Đang lưu tài khoản và mật khẩu vào file accounts.json...");
+    console.log("[PROCESS] Đang lưu tài khoản và mật khẩu vào file accounts.json...");
     const accountsFile = 'accounts.json';
     let accountsList = [];
     if (fs.existsSync(accountsFile)) {
@@ -309,12 +309,12 @@ async function loginToOpenAI() {
       createdAt: new Date().toISOString()
     });
     fs.writeFileSync(accountsFile, JSON.stringify(accountsList, null, 2));
-    console.log("✅ Đã lưu xong vào accounts.json!");
+    console.log("[SUCCESS] Đã lưu xong vào accounts.json!");
 
     // Chờ và lấy mã OTP từ API mail
     const verificationCode = await waitForEmailCode(randomEmail);
 
-    console.log("🔑 Đang tự động điền mã xác nhận...");
+    console.log("[ACTION] Đang tự động điền mã xác nhận...");
     // Ô OTP thường là các ô input có type="text" hoặc inputmode="numeric".
     // Playwright sẽ tự động phân phát chuỗi 6 ký tự vào các ô nếu focus vào ô đầu tiên.
     const otpSelector = 'input[inputmode="numeric"], input[name="code"]';
@@ -325,7 +325,7 @@ async function loginToOpenAI() {
     // Nhấn Enter để gửi mã
     await page.press(otpSelector, 'Enter');
 
-    console.log("⏸️ Đã điền xong mã xác nhận Email. Đang chờ chuyển sang bước nhập SĐT...");
+    console.log("[SUCCESS] Đã điền xong mã xác nhận Email. Đang chờ chuyển sang bước nhập SĐT...");
     
     // ==========================================
     // BƯỚC XÁC MINH SỐ ĐIỆN THOẠI (ViOTP)
@@ -336,7 +336,7 @@ async function loginToOpenAI() {
     let maxRetries = 5; // Thử tối đa 5 số
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        console.log(`\n📞 [Lần ${attempt}] Đang xử lý màn hình nhập số điện thoại...`);
+        console.log(`\n[RETRY] [Lần ${attempt}] Đang xử lý màn hình nhập số điện thoại...`);
         
         const phoneInputSelector = '.PhoneInputInput input, input[type="tel"]';
         await page.waitForSelector(phoneInputSelector, { timeout: 10000 });
@@ -348,7 +348,7 @@ async function loginToOpenAI() {
 
         // 1. Luôn luôn chọn lại quốc gia Việt Nam (phòng trường hợp form bị reset khi quay lại)
         const countryDropdownButton = 'button[aria-haspopup="listbox"]';
-        console.log("🌍 Đang chọn quốc gia Việt Nam...");
+        console.log("[ACTION] Đang chọn quốc gia Việt Nam...");
         await page.waitForSelector(countryDropdownButton, { timeout: 20000 });
         await page.click(countryDropdownButton);
         await page.waitForTimeout(500);
@@ -368,7 +368,7 @@ async function loginToOpenAI() {
         
         // 2. Lấy số điện thoại từ ViOTP
         const phoneData = await rentPhoneNumber();
-        console.log(`=> Đã thuê được số: ${phoneData.phoneNumber}`);
+        console.log(`[INFO] => Đã thuê được số: ${phoneData.phoneNumber}`);
 
         // 3. Điền số điện thoại
         await page.fill(phoneInputSelector, phoneData.phoneNumber);
@@ -385,7 +385,7 @@ async function loginToOpenAI() {
         // Chờ kết quả từ API của OpenAI
         const response = await responsePromise;
         if (response && response.status() === 400) {
-            console.log("❌ OpenAI từ chối số này (Lỗi 400). Sẽ đổi số khác ngay...");
+            console.log("[ERROR] OpenAI từ chối số này (Lỗi 400). Sẽ đổi số khác ngay...");
             await page.waitForTimeout(2000); // Chờ 2s cho UI ổn định rồi thử vòng tiếp theo
             continue; 
         }
@@ -393,10 +393,10 @@ async function loginToOpenAI() {
         // Nếu API trả về thành công (thường là 200), tiến hành chờ OTP
         try {
             smsCode = await waitForSmsCode(phoneData.requestId);
-            console.log(`📩 Đã lấy được mã SMS: ${smsCode}`);
+            console.log(`[SUCCESS] Đã lấy được mã SMS: ${smsCode}`);
             break; // Lấy thành công thì thoát vòng lặp
         } catch (e) {
-            console.log(`❌ Lỗi chờ OTP: ${e.message}. Đang ấn nút Quay lại (Back) để thử số khác...`);
+            console.log(`[ERROR] Lỗi chờ OTP: ${e.message}. Đang ấn nút Quay lại (Back) để thử số khác...`);
             // Sử dụng tính năng "Go Back" của trình duyệt để quay ngược lại trang điền số điện thoại
             await page.goBack();
             await page.waitForTimeout(3000);
@@ -408,7 +408,7 @@ async function loginToOpenAI() {
     }
 
     // Điền mã OTP SMS vào web
-    console.log("✍️ Đang điền mã SMS OTP...");
+    console.log("[ACTION] Đang điền mã SMS OTP...");
     // Tránh việc nhầm với ô OTP email lúc nãy bằng cách lấy ô nhập mã cuối cùng xuất hiện trên trang
     const smsOtpInputs = await page.locator('input[inputmode="numeric"]');
     await smsOtpInputs.last().waitFor({ state: 'visible', timeout: 15000 });
@@ -416,12 +416,12 @@ async function loginToOpenAI() {
     await smsOtpInputs.last().fill(smsCode);
     await smsOtpInputs.last().press('Enter');
 
-    console.log("🎉 Đã điền xong mã SMS! Trình duyệt đang chờ hoàn tất quá trình tạo tài khoản...");
+    console.log("[SUCCESS] Đã điền xong mã SMS! Trình duyệt đang chờ hoàn tất quá trình tạo tài khoản...");
     
     // ==========================================
     // BƯỚC HOÀN TẤT PROFILE (Tên & Ngày Sinh)
     // ==========================================
-    console.log("⏳ Đang chờ trang điền thông tin cá nhân (Tên & Tuổi)...");
+    console.log("[WAIT] Đang chờ trang điền thông tin cá nhân (Tên & Tuổi)...");
     
     // Chờ cho form nhập tên xuất hiện
     await page.waitForSelector('input[type="text"]', { timeout: 20000 });
@@ -431,13 +431,13 @@ async function loginToOpenAI() {
     const lastNames = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis"];
     const randomName = firstNames[Math.floor(Math.random() * firstNames.length)] + " " + lastNames[Math.floor(Math.random() * lastNames.length)];
     
-    console.log(`✍️ Đang điền tên: ${randomName}`);
+    console.log(` Đang điền tên: ${randomName}`);
     const nameInput = page.locator('input[type="text"]');
     await nameInput.first().fill(randomName);
 
     // 2. Nhập Tuổi random (18 - 60 tuổi)
     const randomAge = Math.floor(Math.random() * (60 - 18 + 1)) + 18;
-    console.log(`✍️ Đang điền số tuổi: ${randomAge}...`);
+    console.log(` Đang điền số tuổi: ${randomAge}...`);
     
     // Sử dụng selector input có name="age" hoặc type="number" như trong ảnh bạn cung cấp
     const ageInput = page.locator('input[name="age"], input[type="number"]');
@@ -448,7 +448,7 @@ async function loginToOpenAI() {
     await ageInput.press('Enter');
 
     // 3. Click Xác nhận màn hình 1
-    console.log("🖱️ Đang xác nhận màn hình onboarding 1...");
+    console.log("[ACTION] Đang xác nhận màn hình onboarding 1...");
     await page.waitForTimeout(2000);
     // Sử dụng selector bắt class có chứa chữ _ctas_ (Call to Actions)
     let confirmBtn = page.locator('div[class*="_ctas_"] button');
@@ -458,7 +458,7 @@ async function loginToOpenAI() {
     }
 
     // 4. Chờ và click Xác nhận màn hình 2
-    console.log("🖱️ Đang xác nhận màn hình onboarding 2...");
+    console.log("[ACTION] Đang xác nhận màn hình onboarding 2...");
     await page.waitForTimeout(2000);
     confirmBtn = page.locator('div[class*="_ctas_"] button');
     await confirmBtn.last().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
@@ -466,7 +466,7 @@ async function loginToOpenAI() {
         await confirmBtn.last().click();
     }
 
-    console.log("✅ HOÀN TẤT ĐĂNG KÝ PROFILE!");
+    console.log("[SUCCESS] HOÀN TẤT ĐĂNG KÝ PROFILE!");
 
   } catch (err) {
     console.error("Lỗi Playwright ở bước đăng ký:", err.message);
@@ -476,7 +476,7 @@ async function loginToOpenAI() {
   try {
     // 5. Chờ nhận được Authorization Code
     const code = await codePromise;
-    console.log("🔑 Đã nhận được Authorization Code. Đang tiến hành đổi Token...");
+    console.log("[SUCCESS] Đã nhận được Authorization Code. Đang tiến hành đổi Token...");
 
     // 6. Đóng trình duyệt và server
     await browser.close();
@@ -527,15 +527,15 @@ async function loginToOpenAI() {
     // Thêm nick mới vào danh sách
     existingData.push(formattedData);
 
-    console.log("\n🎉 HOÀN TẤT! Dưới đây là thông tin Token của bạn:\n");
+    console.log("\n[SYSTEM] HOÀN TẤT! Dưới đây là thông tin Token của bạn:\n");
     console.log(JSON.stringify(formattedData, null, 2));
 
     // Lưu JSON ra file
     fs.writeFileSync(fileName, JSON.stringify(existingData, null, 2));
-    console.log(`\n💾 Token đã được lưu (Tổng tài khoản: ${existingData.length}) vào file ${fileName}`);
+    console.log(`\n[SUCCESS] Token đã được lưu (Tổng tài khoản: ${existingData.length}) vào file ${fileName}`);
 
   } catch (error) {
-    console.error("❌ Xảy ra lỗi:", error.message);
+    console.error("[FATAL] Xảy ra lỗi:", error.message);
     if (server) server.close();
     await browser.close();
   }
@@ -546,21 +546,20 @@ async function runAutomation() {
     const total = UI_CONFIG.accountCount || 1;
     for (let i = 1; i <= total; i++) {
         console.log(`\n======================================================`);
-        console.log(`🚀 BẮT ĐẦU TẠO TÀI KHOẢN THỨ ${i} / ${total}`);
+        console.log(`[SYSTEM] BẮT ĐẦU TẠO TÀI KHOẢN THỨ ${i} / ${total}`);
         console.log(`======================================================\n`);
         
         try {
             await loginToOpenAI();
-            console.log(`\n✅ Thành công tài khoản thứ ${i}! Nghỉ 5 giây trước khi tiếp tục...`);
+            console.log(`\n[SUCCESS] Thành công tài khoản thứ ${i}! Nghỉ 5 giây trước khi tiếp tục...`);
             await new Promise(r => setTimeout(r, 5000));
         } catch (e) {
-            console.error(`\n❌ Lỗi nghiêm trọng ở tài khoản ${i}:`, e.message);
-            console.log(`Bỏ qua và chạy tiếp tài khoản sau...`);
+            console.error(`\n[ERROR] Lỗi nghiêm trọng ở tài khoản ${i}:`, e.message);
+            console.log(`[WARN] Bỏ qua và chạy tiếp tài khoản sau...`);
         }
     }
-    console.log(`\n🎉 ĐÃ HOÀN TẤT CHẠY ${total} TÀI KHOẢN!`);
+    console.log(`\n[SYSTEM] ĐÃ HOÀN TẤT CHẠY ${total} TÀI KHOẢN!`);
     process.exit(0);
 }
 
 runAutomation();
-
