@@ -1,1 +1,3 @@
 node_modules/
+accounts.json
+openai_tokens_manual.json
