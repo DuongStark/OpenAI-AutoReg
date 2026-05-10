@@ -194,8 +194,14 @@ async function loginToOpenAI() {
 
   // 4. Mở trình duyệt bằng Playwright
   console.log("🌐 Đang mở trình duyệt ẨN DANH...");
-  const browser = await chromium.launch({ headless: false }); // Mở trình duyệt có giao diện
-  const context = await browser.newContext();
+  // Đặt kích thước màn hình dọc (như mobile) để cửa sổ gọn gàng, không choán chỗ
+  const browser = await chromium.launch({ 
+      headless: false,
+      args: ['--window-size=450,850'] 
+  }); 
+  const context = await browser.newContext({
+      viewport: { width: 450, height: 800 }
+  });
   const page = await context.newPage();
   
   await page.goto(authUrl);
