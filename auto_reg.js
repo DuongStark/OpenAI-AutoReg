@@ -22,7 +22,7 @@ if (!VIOTP_API_TOKEN) {
     console.error("[Lỗi] Chưa cấu hình API Token ViOTP. Vui lòng thiết lập trên giao diện!");
     process.exit(1);
 }
-const VIOTP_SERVICE_ID = 7; // Thường OpenAI là số 7 trên ViOTP. Nếu sai bạn sửa ở đây.
+const VIOTP_SERVICE_ID = 1234; // Thường OpenAI là số 7 trên ViOTP. Nếu sai bạn sửa ở đây.
 
 async function rentPhoneNumber() {
     const url = `https://api.viotp.com/request/getv2?token=${VIOTP_API_TOKEN}&serviceId=${VIOTP_SERVICE_ID}`;
