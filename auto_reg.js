@@ -6,6 +6,7 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 chromium.use(stealth);
 
@@ -25,6 +26,84 @@ if (!VIOTP_API_TOKEN && require.main === module) {
     process.exit(1);
 }
 const VIOTP_SERVICE_ID = 1234; // Thường OpenAI là số 7 trên ViOTP. Nếu sai bạn sửa ở đây.
+
+const BROWSER_LAYOUT = {
+  targetWidth: 450,
+  targetHeight: 850,
+  minWidth: 320,
+  gap: 8,
+  fallbackScreenWidth: 1366,
+  fallbackScreenHeight: 768
+};
+let screenSizeCache = null;
+
+function positiveInt(value) {
+  const number = Number.parseInt(value, 10);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function readLinuxScreenSize() {
+  if (process.platform !== 'linux' || !process.env.DISPLAY) return null;
+
+  try {
+    const output = execFileSync('xrandr', ['--current'], { encoding: 'utf8', timeout: 1000 });
+    const match = output.match(/\bcurrent\s+(\d+)\s+x\s+(\d+)/);
+    if (match) return { width: Number(match[1]), height: Number(match[2]) };
+  } catch (e) {}
+
+  try {
+    const output = execFileSync('xdpyinfo', { encoding: 'utf8', timeout: 1000 });
+    const match = output.match(/dimensions:\s+(\d+)x(\d+)\s+pixels/);
+    if (match) return { width: Number(match[1]), height: Number(match[2]) };
+  } catch (e) {}
+
+  return null;
+}
+
+function getScreenSize() {
+  if (screenSizeCache) return screenSizeCache;
+
+  const envWidth = positiveInt(process.env.BROWSER_SCREEN_WIDTH);
+  const envHeight = positiveInt(process.env.BROWSER_SCREEN_HEIGHT);
+  if (envWidth && envHeight) {
+    screenSizeCache = { width: envWidth, height: envHeight };
+    return screenSizeCache;
+  }
+
+  screenSizeCache = readLinuxScreenSize() || {
+    width: BROWSER_LAYOUT.fallbackScreenWidth,
+    height: BROWSER_LAYOUT.fallbackScreenHeight
+  };
+  return screenSizeCache;
+}
+
+function getBrowserWindowLayout(threadId, threadCount) {
+  const screen = getScreenSize();
+  const count = Math.max(1, positiveInt(threadCount) || 1);
+  const index = Math.max(0, (positiveInt(threadId) || 1) - 1);
+  const maxColumns = Math.max(1, Math.floor((screen.width + BROWSER_LAYOUT.gap) / (BROWSER_LAYOUT.minWidth + BROWSER_LAYOUT.gap)));
+  const columns = Math.min(count, maxColumns);
+  const rows = Math.ceil(count / columns);
+  const column = index % columns;
+  const row = Math.floor(index / columns);
+  const width = Math.min(
+    BROWSER_LAYOUT.targetWidth,
+    Math.floor((screen.width - BROWSER_LAYOUT.gap * (columns - 1)) / columns)
+  );
+  const height = Math.min(
+    BROWSER_LAYOUT.targetHeight,
+    Math.floor((screen.height - BROWSER_LAYOUT.gap * (rows - 1)) / rows)
+  );
+
+  return {
+    x: column * (width + BROWSER_LAYOUT.gap),
+    y: row * (height + BROWSER_LAYOUT.gap),
+    width,
+    height,
+    viewportWidth: Math.max(240, width),
+    viewportHeight: Math.max(300, height - 80)
+  };
+}
 
 async function rentPhoneNumber() {
     const url = `https://api.viotp.com/request/getv2?token=${VIOTP_API_TOKEN}&serviceId=${VIOTP_SERVICE_ID}`;
@@ -304,7 +383,7 @@ async function startGlobalServer() {
 // ==========================================
 // CHƯƠNG TRÌNH CHÍNH
 // ==========================================
-async function loginToOpenAI(threadId = 1) {
+async function loginToOpenAI(threadId = 1, threadCount = 1) {
   console.log(`[SYSTEM] [Luồng ${threadId}] Bắt đầu quá trình đăng nhập OpenAI...`);
 
   // 1. Khởi tạo mã PKCE và State
@@ -333,13 +412,17 @@ async function loginToOpenAI(threadId = 1) {
 
   // 4. Mở trình duyệt bằng Playwright
   console.log(`[ACTION] [Luồng ${threadId}] Đang mở trình duyệt ẨN DANH...`);
-  // Đặt kích thước màn hình dọc (như mobile) để cửa sổ gọn gàng, không choán chỗ
+  const windowLayout = getBrowserWindowLayout(threadId, threadCount);
+  console.log(`[SYSTEM] [Luồng ${threadId}] Vị trí cửa sổ: ${windowLayout.width}x${windowLayout.height}+${windowLayout.x}+${windowLayout.y}`);
   const browser = await chromium.launch({ 
       headless: false,
-      args: ['--window-size=450,850'] 
+      args: [
+          `--window-size=${windowLayout.width},${windowLayout.height}`,
+          `--window-position=${windowLayout.x},${windowLayout.y}`
+      ] 
   }); 
   const context = await browser.newContext({
-      viewport: { width: 450, height: 800 }
+      viewport: { width: windowLayout.viewportWidth, height: windowLayout.viewportHeight }
   });
   const page = await context.newPage();
   
@@ -720,7 +803,7 @@ async function runAutomation() {
             console.log(`\n[SYSTEM] [Luồng ${threadId}] BẮT ĐẦU TẠO TÀI KHOẢN THỨ ${taskIndex} / ${total}`);
             
             try {
-                await loginToOpenAI(threadId);
+                await loginToOpenAI(threadId, concurrentCount);
                 console.log(`\n[SUCCESS] [Luồng ${threadId}] Thành công tài khoản thứ ${taskIndex}! Nghỉ 5 giây...`);
                 await new Promise(r => setTimeout(r, 5000));
             } catch (e) {
