@@ -4,6 +4,8 @@ const stealth = require('puppeteer-extra-plugin-stealth')();
 const crypto = require('crypto');
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 chromium.use(stealth);
 
@@ -18,7 +20,7 @@ if (fs.existsSync('ui_config.json')) {
 }
 
 const VIOTP_API_TOKEN = UI_CONFIG.viotpToken;
-if (!VIOTP_API_TOKEN) {
+if (!VIOTP_API_TOKEN && require.main === module) {
     console.error("[Lỗi] Chưa cấu hình API Token ViOTP. Vui lòng thiết lập trên giao diện!");
     process.exit(1);
 }
@@ -133,6 +135,134 @@ function formatProfileData(tokens, priority = 1) {
       "errorCode": null,
       "backoffLevel": 0
   };
+}
+
+function get9RouterDbPath() {
+  return process.env.NINE_ROUTER_DB_PATH || path.join(os.homedir(), ".9router", "db", "data.sqlite");
+}
+
+function loadBetterSqlite3() {
+  try {
+    return require("better-sqlite3");
+  } catch (e) {
+    const runtimeModule = path.join(os.homedir(), ".9router", "runtime", "node_modules", "better-sqlite3");
+    if (fs.existsSync(runtimeModule)) {
+      return require(runtimeModule);
+    }
+    return null;
+  }
+}
+
+function get9RouterMaxPriority(dbPath = get9RouterDbPath()) {
+  if (!fs.existsSync(dbPath)) return 0;
+
+  const Database = loadBetterSqlite3();
+  if (!Database) return 0;
+
+  let db;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    const row = db.prepare("SELECT MAX(priority) AS maxPriority FROM providerConnections WHERE provider = ?").get("codex");
+    return row?.maxPriority || 0;
+  } catch (error) {
+    console.warn(`[WARN] Không thể đọc priority từ 9router DB: ${error.message}`);
+    return 0;
+  } finally {
+    if (db) db.close();
+  }
+}
+
+function to9RouterConnectionData(profileData) {
+  const {
+    accessToken,
+    refreshToken,
+    expiresAt,
+    testStatus,
+    expiresIn,
+    providerSpecificData,
+    lastUsedAt,
+    consecutiveUseCount,
+    lastError,
+    lastErrorAt,
+    errorCode,
+    backoffLevel
+  } = profileData;
+
+  return {
+    accessToken,
+    refreshToken,
+    expiresAt,
+    testStatus,
+    expiresIn,
+    providerSpecificData,
+    lastUsedAt,
+    consecutiveUseCount,
+    lastError,
+    lastErrorAt,
+    errorCode,
+    backoffLevel
+  };
+}
+
+function saveProfileTo9RouterDb(profileData, dbPath = get9RouterDbPath()) {
+  if (!fs.existsSync(dbPath)) {
+    console.warn(`[WARN] Không tìm thấy 9router DB tại ${dbPath}. Bỏ qua lưu vào 9router.`);
+    return false;
+  }
+
+  const Database = loadBetterSqlite3();
+  if (!Database) {
+    console.warn("[WARN] Không tìm thấy better-sqlite3. Bỏ qua lưu vào 9router.");
+    return false;
+  }
+
+  let db;
+  try {
+    db = new Database(dbPath);
+    db.pragma("busy_timeout = 5000");
+    db.prepare(`
+      INSERT INTO providerConnections (
+        id,
+        provider,
+        authType,
+        name,
+        email,
+        priority,
+        isActive,
+        data,
+        createdAt,
+        updatedAt
+      ) VALUES (
+        @id,
+        @provider,
+        @authType,
+        @name,
+        @email,
+        @priority,
+        @isActive,
+        @data,
+        @createdAt,
+        @updatedAt
+      )
+    `).run({
+      id: profileData.id,
+      provider: profileData.provider,
+      authType: profileData.authType,
+      name: profileData.name,
+      email: profileData.email,
+      priority: profileData.priority,
+      isActive: profileData.isActive ? 1 : 0,
+      data: JSON.stringify(to9RouterConnectionData(profileData)),
+      createdAt: profileData.createdAt,
+      updatedAt: profileData.updatedAt
+    });
+    return true;
+  } catch (error) {
+    console.warn(`[WARN] Không thể lưu token vào 9router DB: ${error.message}`);
+    return false;
+  } finally {
+    if (db) db.close();
+  }
 }
 
 // ==========================================
@@ -537,7 +667,10 @@ async function loginToOpenAI(threadId = 1) {
       }
     }
 
-    const maxPriority = existingData.reduce((max, item) => Math.max(max, item.priority || 0), 0);
+    const maxPriority = Math.max(
+      existingData.reduce((max, item) => Math.max(max, item.priority || 0), 0),
+      get9RouterMaxPriority()
+    );
     const newPriority = maxPriority + 1;
     
     // Format lại data theo chuẩn yêu cầu
@@ -552,6 +685,10 @@ async function loginToOpenAI(threadId = 1) {
     // Lưu JSON ra file
     fs.writeFileSync(fileName, JSON.stringify(existingData, null, 2));
     console.log(`\n[SUCCESS] Token đã được lưu (Tổng tài khoản: ${existingData.length}) vào file ${fileName}`);
+
+    if (saveProfileTo9RouterDb(formattedData)) {
+      console.log("[SUCCESS] Token đã được thêm vào 9router DB (~/.9router/db/data.sqlite)");
+    }
 
   } catch (error) {
     console.error("[FATAL] Xảy ra lỗi:", error.message);
@@ -608,4 +745,13 @@ async function runAutomation() {
     process.exit(0);
 }
 
-runAutomation();
+if (require.main === module) {
+    runAutomation();
+}
+
+module.exports = {
+  formatProfileData,
+  get9RouterMaxPriority,
+  saveProfileTo9RouterDb,
+  to9RouterConnectionData
+};

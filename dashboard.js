@@ -8,6 +8,22 @@ app.use(express.json());
 app.use(express.static('public'));
 
 let currentProcess = null;
+const PORT = Number(process.env.PORT || 3000);
+
+async function openDashboard(url) {
+    if (process.env.DASHBOARD_NO_OPEN === '1') {
+        return;
+    }
+
+    try {
+        const { default: open } = await import('open');
+        await open(url);
+        console.log(`✅ Đã tự mở trình duyệt tại: ${url}`);
+    } catch (error) {
+        console.warn(`[WARN] Không thể tự mở trình duyệt: ${error.message}`);
+        console.warn(`Vui lòng mở thủ công: ${url}`);
+    }
+}
 
 app.post('/api/start', (req, res) => {
     if (currentProcess) {
@@ -61,7 +77,8 @@ app.get('/api/logs', (req, res) => {
     });
 });
 
-app.listen(3000, () => {
-    console.log('🚀 Giao diện Web Dashboard đang chạy tại: http://localhost:3000');
-    console.log('Vui lòng mở trình duyệt và truy cập đường dẫn trên để sử dụng!');
+app.listen(PORT, () => {
+    const url = `http://localhost:${PORT}`;
+    console.log(`🚀 Giao diện Web Dashboard đang chạy tại: ${url}`);
+    openDashboard(url);
 });
