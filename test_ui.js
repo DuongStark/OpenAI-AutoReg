@@ -55,7 +55,7 @@ async function openUIForInspection() {
   server.listen(CONFIG.port);
 
   console.log("🌐 Đang mở trình duyệt để test giao diện...");
-  const browser = await chromium.launch({ headless: false }); 
+  const browser = await chromium.launch({ headless: false, args: ['--incognito'] }); 
   const context = await browser.newContext();
   const page = await context.newPage();
   

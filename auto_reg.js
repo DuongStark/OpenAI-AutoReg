@@ -21,11 +21,13 @@ if (fs.existsSync('ui_config.json')) {
 }
 
 const VIOTP_API_TOKEN = UI_CONFIG.viotpToken;
-if (!VIOTP_API_TOKEN && require.main === module) {
+const IS_MANUAL_MODE = process.argv[2] === 'manual';
+if (!VIOTP_API_TOKEN && require.main === module && !IS_MANUAL_MODE) {
     console.error("[Lỗi] Chưa cấu hình API Token ViOTP. Vui lòng thiết lập trên giao diện!");
     process.exit(1);
 }
 const VIOTP_SERVICE_ID = 1234; // Thường OpenAI là số 7 trên ViOTP. Nếu sai bạn sửa ở đây.
+const NEST_PROXY_API_BASE = 'https://nestproxy.com/api/client/proxy';
 
 const BROWSER_LAYOUT = {
   targetWidth: 450,
@@ -36,10 +38,108 @@ const BROWSER_LAYOUT = {
   fallbackScreenHeight: 768
 };
 let screenSizeCache = null;
+const OTP_ENTRY_GAP_MS = 1000;
+let otpEntryQueue = Promise.resolve();
+let lastOtpEntryAt = 0;
+
+async function runWithOtpEntryDelay(threadId, label, action) {
+  const queued = otpEntryQueue.then(async () => {
+    const waitMs = Math.max(0, OTP_ENTRY_GAP_MS - (Date.now() - lastOtpEntryAt));
+    if (waitMs > 0) {
+      console.log(`[WAIT] [Luồng ${threadId}] Chờ ${waitMs}ms trước khi nhập OTP ${label}...`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+
+    lastOtpEntryAt = Date.now();
+    return action();
+  });
+
+  otpEntryQueue = queued.catch(() => {});
+  return queued;
+}
 
 function positiveInt(value) {
   const number = Number.parseInt(value, 10);
   return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function getNestProxyKeys() {
+  const raw = UI_CONFIG.nestProxyKeys || "";
+  return raw
+    .split(/[\s,;]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function formatProxyServer(proxy) {
+  if (!proxy) return null;
+  if (/^https?:\/\//i.test(proxy) || /^socks[45]?:\/\//i.test(proxy)) return proxy;
+  return `http://${proxy}`;
+}
+
+async function fetchNestProxyJson(url, options = {}) {
+  const res = await fetch(url, options);
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch (e) {}
+
+  if (!res.ok) {
+    throw new Error(`NestProxy HTTP ${res.status}: ${text}`);
+  }
+
+  return json;
+}
+
+async function rotateNestProxy(proxyKey, threadId, taskIndex) {
+  if (!proxyKey) return null;
+
+  const encodedKey = encodeURIComponent(proxyKey);
+  try {
+    console.log(`[ACTION] [Luồng ${threadId}] Đang xoay NestProxy cho tài khoản ${taskIndex}...`);
+    await fetchNestProxyJson(`${NEST_PROXY_API_BASE}/remove?proxy_key=${encodedKey}`, { method: 'POST' }).catch(error => {
+      console.log(`[WARN] [Luồng ${threadId}] Không remove proxy cũ được: ${error.message}`);
+    });
+
+    const json = await fetchNestProxyJson(`${NEST_PROXY_API_BASE}/available?proxy_key=${encodedKey}`);
+    const proxy = json?.data?.proxy || json?.proxy || json?.data;
+    if (!proxy || typeof proxy !== 'string') {
+      throw new Error(`Response không có proxy hợp lệ: ${JSON.stringify(json)}`);
+    }
+
+    console.log(`[SUCCESS] [Luồng ${threadId}] NestProxy mới: ${proxy}`);
+    return proxy;
+  } catch (error) {
+    console.log(`[WARN] [Luồng ${threadId}] Không lấy được NestProxy: ${error.message}. Sẽ chạy không proxy.`);
+    return null;
+  }
+}
+
+async function resetNestProxy(proxyKey, threadId, taskIndex) {
+  if (!proxyKey) return;
+
+  const encodedKey = encodeURIComponent(proxyKey);
+  try {
+    console.log(`[ACTION] [Luồng ${threadId}] Reset NestProxy sau tài khoản ${taskIndex}...`);
+    await fetchNestProxyJson(`${NEST_PROXY_API_BASE}/remove?proxy_key=${encodedKey}`, { method: 'POST' });
+    console.log(`[SUCCESS] [Luồng ${threadId}] Đã reset NestProxy.`);
+  } catch (error) {
+    console.log(`[WARN] [Luồng ${threadId}] Reset NestProxy thất bại: ${error.message}`);
+  }
+}
+
+function isProxyConnectionError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return [
+    'proxy',
+    'err_proxy_connection_failed',
+    'err_tunnel_connection_failed',
+    'err_socks_connection_failed',
+    'err_internet_disconnected',
+    'no internet',
+    'address is incorrect'
+  ].some(text => message.includes(text));
 }
 
 function readLinuxScreenSize() {
@@ -106,7 +206,7 @@ function getBrowserWindowLayout(threadId, threadCount) {
 }
 
 async function rentPhoneNumber() {
-    const url = `https://api.viotp.com/request/getv2?token=${VIOTP_API_TOKEN}&serviceId=${VIOTP_SERVICE_ID}`;
+    const url = `https://api.viotp.com/request/getv2?token=${VIOTP_API_TOKEN}&serviceId=${VIOTP_SERVICE_ID}&network=VINAPHONE`;
     const res = await fetch(url);
     const json = await res.json();
     if (json.status_code === 200 && json.success) {
@@ -119,9 +219,9 @@ async function rentPhoneNumber() {
 }
 
 async function waitForSmsCode(requestId) {
-    console.log(`[WAIT] Đang chờ mã OTP SMS (Timeout: 2 phút)...`);
+    console.log(`[WAIT] Đang chờ mã OTP SMS (Timeout: 4 phút)...`);
     const url = `https://api.viotp.com/session/getv2?requestId=${requestId}&token=${VIOTP_API_TOKEN}`;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 80; i++) {
         await new Promise(res => setTimeout(res, 3000));
         try {
             const res = await fetch(url);
@@ -344,6 +444,64 @@ function saveProfileTo9RouterDb(profileData, dbPath = get9RouterDbPath()) {
   }
 }
 
+async function exchangeCodeForTokens(code, verifier) {
+  const tokenResponse = await fetch(CONFIG.tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json'
+    },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: CONFIG.clientId,
+      code,
+      redirect_uri: CONFIG.redirectUri,
+      code_verifier: verifier
+    })
+  });
+
+  if (!tokenResponse.ok) {
+    const errText = await tokenResponse.text();
+    throw new Error(`Lỗi đổi token: ${errText}`);
+  }
+
+  return tokenResponse.json();
+}
+
+function saveTokens(tokens) {
+  const fileName = 'openai_tokens_manual.json';
+  let existingData = [];
+  if (fs.existsSync(fileName)) {
+    try {
+      const fileContent = fs.readFileSync(fileName, 'utf8');
+      const parsed = JSON.parse(fileContent);
+      existingData = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      existingData = [];
+    }
+  }
+
+  const maxPriority = Math.max(
+    existingData.reduce((max, item) => Math.max(max, item.priority || 0), 0),
+    get9RouterMaxPriority()
+  );
+  const formattedData = formatProfileData(tokens, maxPriority + 1);
+
+  existingData.push(formattedData);
+
+  console.log("\n[SYSTEM] HOÀN TẤT! Dưới đây là thông tin Token của bạn:\n");
+  console.log(JSON.stringify(formattedData, null, 2));
+
+  fs.writeFileSync(fileName, JSON.stringify(existingData, null, 2));
+  console.log(`\n[SUCCESS] Token đã được lưu (Tổng tài khoản: ${existingData.length}) vào file ${fileName}`);
+
+  if (saveProfileTo9RouterDb(formattedData)) {
+    console.log("[SUCCESS] Token đã được thêm vào 9router DB (~/.9router/db/data.sqlite)");
+  }
+
+  return formattedData;
+}
+
 // ==========================================
 // GLOBAL OAUTH SERVER (HỖ TRỢ ĐA LUỒNG)
 // ==========================================
@@ -380,10 +538,32 @@ async function startGlobalServer() {
     });
 }
 
+function startTryAgainWatcher(page, threadId, label = '') {
+  let clicking = false;
+  const prefix = label ? `[${label}] ` : '';
+  const timer = setInterval(async () => {
+    if (clicking || page.isClosed()) return;
+
+    clicking = true;
+    try {
+      const tryAgainBtn = page.getByRole('button', { name: /try again/i });
+      if (await tryAgainBtn.first().isVisible().catch(() => false)) {
+        console.log(`[WARN] [Luồng ${threadId}] ${prefix}Thấy nút Try again, đang bấm lại...`);
+        await tryAgainBtn.first().click();
+      }
+    } catch (e) {
+    } finally {
+      clicking = false;
+    }
+  }, 2500);
+
+  return () => clearInterval(timer);
+}
+
 // ==========================================
 // CHƯƠNG TRÌNH CHÍNH
 // ==========================================
-async function loginToOpenAI(threadId = 1, threadCount = 1) {
+async function loginToOpenAI(threadId = 1, threadCount = 1, proxy = null) {
   console.log(`[SYSTEM] [Luồng ${threadId}] Bắt đầu quá trình đăng nhập OpenAI...`);
 
   // 1. Khởi tạo mã PKCE và State
@@ -414,30 +594,51 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
   console.log(`[ACTION] [Luồng ${threadId}] Đang mở trình duyệt ẨN DANH...`);
   const windowLayout = getBrowserWindowLayout(threadId, threadCount);
   console.log(`[SYSTEM] [Luồng ${threadId}] Vị trí cửa sổ: ${windowLayout.width}x${windowLayout.height}+${windowLayout.x}+${windowLayout.y}`);
-  const browser = await chromium.launch({ 
+  const launchOptions = {
       headless: false,
       args: [
+          '--incognito',
           `--window-size=${windowLayout.width},${windowLayout.height}`,
           `--window-position=${windowLayout.x},${windowLayout.y}`
-      ] 
-  }); 
+      ]
+  };
+  const proxyServer = formatProxyServer(proxy);
+  if (proxyServer) {
+      launchOptions.proxy = {
+          server: proxyServer,
+          bypass: 'localhost,127.0.0.1'
+      };
+      console.log(`[SYSTEM] [Luồng ${threadId}] Đang dùng proxy: ${proxyServer}`);
+  }
+  const browser = await chromium.launch(launchOptions); 
   const context = await browser.newContext({
       viewport: { width: windowLayout.viewportWidth, height: windowLayout.viewportHeight }
   });
   const page = await context.newPage();
+  const stopTryAgainWatcher = startTryAgainWatcher(page, threadId);
   
-  await page.goto(authUrl);
-
-  // --- PHẦN TỰ ĐỘNG HÓA THEO YÊU CẦU ---
   try {
+    try {
+      await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch (error) {
+      if (proxyServer && isProxyConnectionError(error)) {
+        throw new Error(`Proxy lỗi khi mở OpenAI: ${error.message}`);
+      }
+      throw error;
+    }
+
+    if (proxyServer) {
+      const chromeError = page.url().startsWith('chrome-error://') || await page.locator('text=/No internet|proxy server|address is incorrect/i').first().isVisible().catch(() => false);
+      if (chromeError) {
+        throw new Error('Proxy lỗi khi mở OpenAI: No internet / proxy server / address is incorrect');
+      }
+    }
+
+    // --- PHẦN TỰ ĐỘNG HÓA THEO YÊU CẦU ---
     // Hàm tạo email ngẫu nhiên
     function generateRandomEmail() {
-      const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-      let prefix = '';
-      for (let i = 0; i < 10; i++) {
-        prefix += chars[Math.floor(Math.random() * chars.length)];
-      }
-      return prefix + '@pixpress.art';
+      const randomPart = crypto.randomBytes(8).toString('base64url').slice(0, 12).toLowerCase();
+      return `${randomPart}@pixpress.art`;
     }
 
     // Hàm gọi API lấy mã xác nhận
@@ -476,16 +677,26 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
     }
 
     console.log(`[ACTION] [Luồng ${threadId}] Đang bấm vào link đăng ký...`);
-    const signUpSelector = '#_r_1_ > div._section_1wcdi_7._ctas_1wcdi_13 > span > a';
-    await page.waitForSelector(signUpSelector, { timeout: 15000 });
-    await page.click(signUpSelector);
+    const emailInputSelector = 'input[name="email"], input[type="email"]';
+    const signUpSelector = [
+      'a:has-text("Sign up")',
+      'a:has-text("Create account")',
+      'a:has-text("Đăng ký")',
+      'a[href*="signup"]',
+      'a[href*="register"]'
+    ].join(', ');
+    const signUpLink = page.locator(signUpSelector).first();
+    if (await signUpLink.waitFor({ state: 'visible', timeout: 15000 }).then(() => true).catch(() => false)) {
+      await signUpLink.click();
+    } else {
+      await page.waitForSelector(emailInputSelector, { timeout: 5000 });
+    }
 
     console.log("� Đang tạo email ngẫu nhiên...");
     const randomEmail = generateRandomEmail();
     console.log(`[INFO] => Email mới: ${randomEmail}`);
 
     console.log("[ACTION] Đang điền Email và ấn Enter...");
-    const emailInputSelector = 'input[name="email"], input[type="email"]';
     await page.waitForSelector(emailInputSelector, { timeout: 15000 });
     // Chờ một chút để ô input sẵn sàng
     await page.waitForTimeout(500);
@@ -542,10 +753,10 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
     const otpSelector = 'input[inputmode="numeric"], input[name="code"]';
     await page.waitForSelector(otpSelector, { timeout: 15000 });
     await page.waitForTimeout(1000);
-    await page.fill(otpSelector, verificationCode);
-    
-    // Nhấn Enter để gửi mã
-    await page.press(otpSelector, 'Enter');
+    await runWithOtpEntryDelay(threadId, 'Email', async () => {
+      await page.fill(otpSelector, verificationCode);
+      await page.press(otpSelector, 'Enter');
+    });
 
     console.log("[SUCCESS] Đã điền xong mã xác nhận Email. Đang chờ chuyển sang bước nhập SĐT...");
     
@@ -555,13 +766,17 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
     
     // --- VÒNG LẶP LẤY SỐ & CHỜ SMS ---
     let smsCode = null;
-    let maxRetries = 5; // Thử tối đa 5 số
+    let maxRetries = 1; // Không đổi số khác: lỗi SMS thì bỏ tài khoản này
+    const phoneInputSelector = '.PhoneInputInput input, input[type="tel"]';
+
+    async function waitForPhoneInput(timeout = 15000) {
+        await page.locator(phoneInputSelector).first().waitFor({ state: 'visible', timeout });
+    }
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         console.log(`\n[RETRY] [Lần ${attempt}] Đang xử lý màn hình nhập số điện thoại...`);
         
-        const phoneInputSelector = '.PhoneInputInput input, input[type="tel"]';
-        await page.waitForSelector(phoneInputSelector, { timeout: 10000 });
+        await waitForPhoneInput(15000);
         
         // 0. Xóa số cũ (nếu có) TRƯỚC KHI chọn quốc gia
         // Nếu không xóa, lúc chọn VN xong nó sẽ tự nhảy lại +1 (do nhận diện số Mỹ cũ)
@@ -607,9 +822,7 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
         // Chờ kết quả từ API của OpenAI
         const response = await responsePromise;
         if (response && response.status() === 400) {
-            console.log("[ERROR] OpenAI từ chối số này (Lỗi 400). Sẽ đổi số khác ngay...");
-            await page.waitForTimeout(2000); // Chờ 2s cho UI ổn định rồi thử vòng tiếp theo
-            continue; 
+            throw new Error("OpenAI từ chối số này (Lỗi 400). Bỏ tài khoản này.");
         }
 
         // Nếu API trả về thành công (thường là 200), tiến hành chờ OTP
@@ -618,15 +831,12 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
             console.log(`[SUCCESS] Đã lấy được mã SMS: ${smsCode}`);
             break; // Lấy thành công thì thoát vòng lặp
         } catch (e) {
-            console.log(`[ERROR] Lỗi chờ OTP: ${e.message}. Đang ấn nút Quay lại (Back) để thử số khác...`);
-            // Sử dụng tính năng "Go Back" của trình duyệt để quay ngược lại trang điền số điện thoại
-            await page.goBack();
-            await page.waitForTimeout(3000);
+            throw new Error(`Lỗi chờ OTP SMS: ${e.message}. Bỏ tài khoản này.`);
         }
     }
 
     if (!smsCode) {
-        throw new Error("Đã thử hết 5 số mà vẫn thất bại. Dừng quá trình cho tài khoản này.");
+        throw new Error("Không lấy được mã SMS. Bỏ tài khoản này.");
     }
 
     // Điền mã OTP SMS vào web
@@ -635,10 +845,13 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
     const smsOtpInputs = await page.locator('input[inputmode="numeric"]');
     await smsOtpInputs.last().waitFor({ state: 'visible', timeout: 15000 });
     await page.waitForTimeout(1000);
-    await smsOtpInputs.last().fill(smsCode);
-    await smsOtpInputs.last().press('Enter');
+    await runWithOtpEntryDelay(threadId, 'SMS', async () => {
+      await smsOtpInputs.last().fill(smsCode);
+      await smsOtpInputs.last().press('Enter');
+    });
 
     console.log("[SUCCESS] Đã điền xong mã SMS! Trình duyệt đang chờ hoàn tất quá trình tạo tài khoản...");
+    let code;
     
     // ==========================================
     // BƯỚC HOÀN TẤT PROFILE (Tên & Ngày Sinh)
@@ -663,47 +876,57 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
     
     // Sử dụng selector input có name="age" hoặc type="number" như trong ảnh bạn cung cấp
     const ageInput = page.locator('input[name="age"], input[type="number"]');
-    await ageInput.waitFor({ state: 'visible', timeout: 5000 });
-    await ageInput.fill(randomAge.toString());
-    
-    // Nhấn Enter để gửi form
-    await ageInput.press('Enter');
-
-    console.log(`[ACTION] [Luồng ${threadId}] Đang xử lý các màn hình Onboarding cuối cùng...`);
-    
-    // Vòng lặp xử lý Onboarding & Bẫy lỗi Duplicate Auth
-    async function handleOnboarding() {
-        for (let i = 0; i < 20; i++) { // Thử tối đa 20 vòng (khoảng 40 giây)
-            try {
-                // 1. Nếu có lỗi Duplicate Auth, ưu tiên bấm Try again trước
-                const tryAgainBtn = page.getByRole('button', { name: /try again/i });
-                if (await tryAgainBtn.isVisible()) {
-                    console.log(`[WARN] [Luồng ${threadId}] Gặp lỗi Duplicate Auth, đang bấm Try again...`);
-                    await tryAgainBtn.click();
-                    await page.waitForTimeout(3000);
-                    continue; 
-                }
-
-                // 2. Bấm nút Continue (Xác nhận) liên tục nếu nó xuất hiện
-                const confirmBtn = page.locator('div[class*="_ctas_"] button');
-                if (await confirmBtn.last().isVisible()) {
-                    console.log(`[ACTION] [Luồng ${threadId}] Đang bấm nút Xác nhận (Continue)...`);
-                    await confirmBtn.last().click();
-                    await page.waitForTimeout(2000);
-                    continue;
-                }
-            } catch (e) {}
-            
-            await page.waitForTimeout(1500);
-        }
-        throw new Error("Quá thời gian xử lý Onboarding (40s)");
+    const hasAgeInput = await ageInput.first().waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+    if (hasAgeInput) {
+        await ageInput.first().fill(randomAge.toString());
+        
+        // Nhấn Enter để gửi form
+        await ageInput.first().press('Enter');
+    } else {
+        console.log(`[WAIT] [Luồng ${threadId}] Không thấy ô tuổi sau 5s. Vui lòng thao tác thủ công trên trình duyệt đang mở...`);
+        console.log(`[WAIT] [Luồng ${threadId}] Script sẽ chờ đến khi nhận Authorization Code.`);
+        code = await codePromise;
     }
 
-    // Chạy song song: vừa rình bấm nút (Continue hoặc Try again), vừa chờ nhận Auth Code
-    const code = await Promise.race([
-        codePromise,
-        handleOnboarding()
-    ]);
+    if (!code) {
+        console.log(`[ACTION] [Luồng ${threadId}] Đang xử lý các màn hình Onboarding cuối cùng...`);
+        
+        // Vòng lặp xử lý Onboarding & Bẫy lỗi Duplicate Auth
+        async function handleOnboarding() {
+            for (let i = 0; i < 20; i++) { // Thử tối đa 20 vòng (khoảng 40 giây)
+                try {
+                    // 1. Nếu có lỗi Duplicate Auth, ưu tiên bấm Try again trước
+                    const tryAgainBtn = page.getByRole('button', { name: /try again/i });
+                    if (await tryAgainBtn.isVisible()) {
+                        console.log(`[WARN] [Luồng ${threadId}] Gặp lỗi Duplicate Auth, đang bấm Try again...`);
+                        await tryAgainBtn.click();
+                        await page.waitForTimeout(3000);
+                        continue; 
+                    }
+
+                    // 2. Bấm nút Continue (Xác nhận) liên tục nếu nó xuất hiện
+                    const confirmBtn = page.locator('div[class*="_ctas_"] button');
+                    if (await confirmBtn.last().isVisible()) {
+                        console.log(`[ACTION] [Luồng ${threadId}] Đang bấm nút Xác nhận (Continue)...`);
+                        await confirmBtn.last().click();
+                        await page.waitForTimeout(2000);
+                        continue;
+                    }
+                } catch (e) {}
+                
+                await page.waitForTimeout(1500);
+            }
+            console.log(`[WAIT] [Luồng ${threadId}] Onboarding chưa xong sau 40s. Vui lòng thao tác thủ công trên trình duyệt đang mở...`);
+            console.log(`[WAIT] [Luồng ${threadId}] Script sẽ chờ đến khi nhận Authorization Code.`);
+            return codePromise;
+        }
+
+        // Chạy song song: vừa rình bấm nút (Continue hoặc Try again), vừa chờ nhận Auth Code
+        code = await Promise.race([
+            codePromise,
+            handleOnboarding()
+        ]);
+    }
 
     console.log(`[SUCCESS] [Luồng ${threadId}] HOÀN TẤT ĐĂNG KÝ PROFILE! Đã nhận Authorization Code.`);
 
@@ -714,69 +937,64 @@ async function loginToOpenAI(threadId = 1, threadCount = 1) {
     // 6. Đóng trình duyệt
     await browser.close();
 
-    // 7. Gọi API đổi Code lấy Token
-    const tokenResponse = await fetch(CONFIG.tokenUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json'
-      },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: CONFIG.clientId,
-        code: code,
-        redirect_uri: CONFIG.redirectUri,
-        code_verifier: pkce.verifier
-      })
-    });
-
-    if (!tokenResponse.ok) {
-      const errText = await tokenResponse.text();
-      throw new Error(`Lỗi đổi token: ${errText}`);
-    }
-
-    const tokens = await tokenResponse.json();
-    
-    // Đọc file cũ để tính priority và giữ lại các nick cũ
-    const fileName = 'openai_tokens_manual.json';
-    let existingData = [];
-    if (fs.existsSync(fileName)) {
-      try {
-        const fileContent = fs.readFileSync(fileName, 'utf8');
-        const parsed = JSON.parse(fileContent);
-        existingData = Array.isArray(parsed) ? parsed : [parsed];
-      } catch (e) {
-        existingData = [];
-      }
-    }
-
-    const maxPriority = Math.max(
-      existingData.reduce((max, item) => Math.max(max, item.priority || 0), 0),
-      get9RouterMaxPriority()
-    );
-    const newPriority = maxPriority + 1;
-    
-    // Format lại data theo chuẩn yêu cầu
-    const formattedData = formatProfileData(tokens, newPriority);
-    
-    // Thêm nick mới vào danh sách
-    existingData.push(formattedData);
-
-    console.log("\n[SYSTEM] HOÀN TẤT! Dưới đây là thông tin Token của bạn:\n");
-    console.log(JSON.stringify(formattedData, null, 2));
-
-    // Lưu JSON ra file
-    fs.writeFileSync(fileName, JSON.stringify(existingData, null, 2));
-    console.log(`\n[SUCCESS] Token đã được lưu (Tổng tài khoản: ${existingData.length}) vào file ${fileName}`);
-
-    if (saveProfileTo9RouterDb(formattedData)) {
-      console.log("[SUCCESS] Token đã được thêm vào 9router DB (~/.9router/db/data.sqlite)");
-    }
+    // 7. Gọi API đổi Code lấy Token và lưu
+    const tokens = await exchangeCodeForTokens(code, pkce.verifier);
+    saveTokens(tokens);
 
   } catch (error) {
     console.error("[FATAL] Xảy ra lỗi:", error.message);
     await browser.close();
     throw error; // Ném lỗi ra ngoài để vòng lặp biết
+  } finally {
+    stopTryAgainWatcher();
+  }
+}
+
+async function manualLoginToOpenAI() {
+  await startGlobalServer();
+  console.log("[SYSTEM] Bắt đầu đăng nhập thủ công OpenAI...");
+
+  const pkce = generatePKCE();
+  const state = crypto.randomBytes(16).toString('hex');
+  const authParams = new URLSearchParams({
+    response_type: "code",
+    client_id: CONFIG.clientId,
+    redirect_uri: CONFIG.redirectUri,
+    scope: CONFIG.scope,
+    state,
+    code_challenge: pkce.challenge,
+    code_challenge_method: "S256",
+    id_token_add_organizations: "true",
+    originator: "openai_native",
+  });
+  const authUrl = `${CONFIG.authorizeUrl}?${authParams.toString()}`;
+
+  const codePromise = new Promise((resolve, reject) => {
+    pendingCallbacks.set(state, { resolve, reject });
+  });
+
+  console.log("[ACTION] Đang mở cửa sổ đăng nhập thủ công...");
+  const browser = await chromium.launch({
+    headless: false,
+    args: ['--incognito', '--window-size=500,850']
+  });
+
+  try {
+    const context = await browser.newContext({ viewport: { width: 500, height: 770 } });
+    const page = await context.newPage();
+    await page.goto(authUrl);
+
+    console.log("[WAIT] Vui lòng tự đăng nhập trong cửa sổ vừa mở...");
+    const code = await codePromise;
+    console.log("[SUCCESS] Đã nhận Authorization Code từ đăng nhập thủ công.");
+
+    await browser.close();
+    const tokens = await exchangeCodeForTokens(code, pkce.verifier);
+    saveTokens(tokens);
+  } catch (error) {
+    console.error("[FATAL] Xảy ra lỗi đăng nhập thủ công:", error.message);
+    await browser.close();
+    throw error;
   }
 }
 
@@ -785,56 +1003,98 @@ async function runAutomation() {
     await startGlobalServer();
     
     const total = UI_CONFIG.accountCount || 1;
-    const MAX_CONCURRENT = 3; // Mở tối đa 3 trình duyệt cùng lúc
-    const concurrentCount = Math.min(MAX_CONCURRENT, total);
+    const THREAD_COUNT = 2;
+    const NEXT_ACCOUNT_DELAY_MS = 30000;
+    const concurrentCount = Math.min(THREAD_COUNT, total);
+    const proxyKeys = getNestProxyKeys();
+    let nextTaskIndex = 1;
     
     console.log(`\n======================================================`);
-    console.log(`[SYSTEM] BẮT ĐẦU CHẠY ĐA LUỒNG (${concurrentCount} luồng) - TỔNG: ${total} TÀI KHOẢN`);
-    console.log(`======================================================\n`);
-    
-    let currentIndex = 0;
-    
-    // Hàm Worker thực thi tác vụ
-    async function worker(threadId) {
-        while (currentIndex < total) {
-            const taskIndex = ++currentIndex;
-            if (taskIndex > total) break;
-            
-            console.log(`\n[SYSTEM] [Luồng ${threadId}] BẮT ĐẦU TẠO TÀI KHOẢN THỨ ${taskIndex} / ${total}`);
-            
-            try {
-                await loginToOpenAI(threadId, concurrentCount);
-                console.log(`\n[SUCCESS] [Luồng ${threadId}] Thành công tài khoản thứ ${taskIndex}! Nghỉ 5 giây...`);
-                await new Promise(r => setTimeout(r, 5000));
-            } catch (e) {
-                console.error(`\n[ERROR] [Luồng ${threadId}] Lỗi tài khoản ${taskIndex}:`, e.message);
-                console.log(`[WARN] [Luồng ${threadId}] Bỏ qua và chạy tiếp tài khoản sau...`);
-            }
+    console.log(`[SYSTEM] BẮT ĐẦU CHẠY ${concurrentCount} LUỒNG - TỔNG: ${total} TÀI KHOẢN`);
+    console.log(`[SYSTEM] Luồng nào xong sẽ nghỉ ${NEXT_ACCOUNT_DELAY_MS / 1000}s rồi mở tài khoản tiếp theo`);
+    if (proxyKeys.length > 0) {
+        console.log(`[SYSTEM] NestProxy bật: ${proxyKeys.length} proxy_key`);
+        if (proxyKeys.length < THREAD_COUNT && total > 1) {
+            console.log(`[WARN] Chỉ có ${proxyKeys.length} proxy_key. Hai luồng có thể dùng chung proxy.`);
         }
     }
+    console.log(`======================================================\n`);
     
-    // Khởi tạo các luồng
-    const workers = [];
-    for (let i = 1; i <= concurrentCount; i++) {
-        workers.push(worker(i));
-        // Tránh mở trình duyệt cùng một miligiây gây crash
-        await new Promise(r => setTimeout(r, 2000));
+    function getNextTaskIndex() {
+        if (nextTaskIndex > total) return null;
+        const taskIndex = nextTaskIndex;
+        nextTaskIndex += 1;
+        return taskIndex;
     }
-    
-    // Đợi tất cả các luồng hoàn thành
+
+    const workers = [];
+    for (let i = 0; i < concurrentCount; i++) {
+        const threadId = i + 1;
+        workers.push((async () => {
+            if (threadId > 1) {
+                await new Promise(r => setTimeout(r, 2000 * (threadId - 1)));
+            }
+
+            let isFirstTask = true;
+            while (true) {
+                const taskIndex = getNextTaskIndex();
+                if (!taskIndex) break;
+
+                if (!isFirstTask) {
+                    console.log(`[WAIT] [Luồng ${threadId}] Nghỉ ${NEXT_ACCOUNT_DELAY_MS / 1000}s trước khi mở tài khoản tiếp theo...`);
+                    await new Promise(r => setTimeout(r, NEXT_ACCOUNT_DELAY_MS));
+                }
+                isFirstTask = false;
+
+                console.log(`\n[SYSTEM] [Luồng ${threadId}] BẮT ĐẦU TẠO TÀI KHOẢN THỨ ${taskIndex} / ${total}`);
+                const proxyKey = proxyKeys.length > 0 ? proxyKeys[(taskIndex - 1) % proxyKeys.length] : null;
+
+                const maxProxyRetries = proxyKey ? 3 : 1;
+                for (let attempt = 1; attempt <= maxProxyRetries; attempt++) {
+                    try {
+                        const proxy = await rotateNestProxy(proxyKey, threadId, taskIndex);
+                        await loginToOpenAI(threadId, concurrentCount, proxy);
+                        console.log(`\n[SUCCESS] [Luồng ${threadId}] Thành công tài khoản thứ ${taskIndex}!`);
+                        break;
+                    } catch (e) {
+                        const canRetryProxy = proxyKey && isProxyConnectionError(e) && attempt < maxProxyRetries;
+                        if (canRetryProxy) {
+                            console.log(`[WARN] [Luồng ${threadId}] Proxy lỗi ở tài khoản ${taskIndex} (lần ${attempt}/${maxProxyRetries}): ${e.message}`);
+                            console.log(`[ACTION] [Luồng ${threadId}] Reset proxy, chờ 5s rồi thử lại tài khoản này...`);
+                            await new Promise(r => setTimeout(r, 5000));
+                            continue;
+                        }
+
+                        console.error(`\n[ERROR] [Luồng ${threadId}] Lỗi tài khoản ${taskIndex}:`, e.message);
+                        console.log(`[WARN] [Luồng ${threadId}] Bỏ qua tài khoản lỗi.`);
+                        break;
+                    } finally {
+                        await resetNestProxy(proxyKey, threadId, taskIndex);
+                    }
+                }
+            }
+        })());
+    }
+
     await Promise.all(workers);
     
-    console.log(`\n[SYSTEM] ĐÃ HOÀN TẤT CHẠY ĐA LUỒNG ${total} TÀI KHOẢN!`);
+    console.log(`\n[SYSTEM] ĐÃ HOÀN TẤT ${total} TÀI KHOẢN!`);
     process.exit(0);
 }
 
 if (require.main === module) {
-    runAutomation();
+    if (IS_MANUAL_MODE) {
+        manualLoginToOpenAI().then(() => process.exit(0)).catch(() => process.exit(1));
+    } else {
+        runAutomation();
+    }
 }
 
 module.exports = {
   formatProfileData,
   get9RouterMaxPriority,
+  manualLoginToOpenAI,
+  saveTokens,
   saveProfileTo9RouterDb,
   to9RouterConnectionData
 };

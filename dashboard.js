@@ -30,14 +30,24 @@ app.post('/api/start', (req, res) => {
         return res.status(400).json({ error: 'Automation is already running' });
     }
     
-    const { viotpToken, mode, accountCount } = req.body;
+    const { viotpToken, mode, accountCount, nestProxyKeys } = req.body;
     
     // Lưu cấu hình vào file để auto_reg.js đọc
-    fs.writeFileSync('ui_config.json', JSON.stringify({ viotpToken, mode, accountCount }));
+    fs.writeFileSync('ui_config.json', JSON.stringify({ viotpToken, mode, accountCount, nestProxyKeys }));
     
     // Chạy auto_reg.js như một tiến trình con
     currentProcess = spawn('node', ['auto_reg.js']);
     
+    res.json({ success: true });
+});
+
+app.post('/api/manual-login', (req, res) => {
+    if (currentProcess) {
+        return res.status(400).json({ error: 'Automation is already running' });
+    }
+
+    currentProcess = spawn('node', ['auto_reg.js', 'manual']);
+
     res.json({ success: true });
 });
 
